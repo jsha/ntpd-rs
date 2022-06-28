@@ -1,0 +1,12 @@
+[package]
+name = "ntp-os-clock"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+ntp-proto = { path = "../ntp-proto" }
+libc = "0.2.126"
+thiserror = "1.0.31"
