@@ -1,4 +1,4 @@
-use crate::{ObservablePeerState, Peers};
+use crate::{ObservablePeerState, Peers, config::ConfigError};
 use ntp_proto::SystemSnapshot;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
@@ -18,7 +18,7 @@ pub async fn spawn(
     config: &crate::config::ObserveConfig,
     peers_reader: Arc<tokio::sync::RwLock<Peers>>,
     system_reader: Arc<tokio::sync::RwLock<SystemSnapshot>>,
-) -> JoinHandle<std::io::Result<()>> {
+) -> JoinHandle<Result<(), ConfigError>> {
     let config = config.clone();
     tokio::spawn(async move {
         let result = observer(config, peers_reader, system_reader).await;
@@ -33,33 +33,37 @@ async fn observer(
     config: crate::config::ObserveConfig,
     peers_reader: Arc<tokio::sync::RwLock<Peers>>,
     system_reader: Arc<tokio::sync::RwLock<SystemSnapshot>>,
-) -> std::io::Result<()> {
+) -> Result<(), ConfigError> {
     let path = match config.path {
         Some(path) => path,
         None => return Ok(()),
     };
 
+    let err_with_path = |e| {
+        ConfigError::Io(path.to_owned(), e)
+    };
+
     // must unlink path before the bind below (otherwise we get "address already in use")
     if path.exists() {
-        std::fs::remove_file(&path)?;
+        std::fs::remove_file(&path).map_err(err_with_path)?;
     }
-    let peers_listener = UnixListener::bind(&path)?;
+    let peers_listener = UnixListener::bind(&path).map_err(err_with_path)?;
 
     // this binary needs to run as root to be able to adjust the system clock.
     // by default, the socket inherits root permissions, but the client should not need
     // elevated permissions to read from the socket. So we explicitly set the permissions
     let permissions: std::fs::Permissions = PermissionsExt::from_mode(config.mode);
-    std::fs::set_permissions(&path, permissions)?;
+    std::fs::set_permissions(&path, permissions).map_err(err_with_path)?;
 
     loop {
-        let (mut stream, _addr) = peers_listener.accept().await?;
+        let (mut stream, _addr) = peers_listener.accept().await.map_err(err_with_path)?;
 
         let observe = ObservableState {
             peers: peers_reader.read().await.observe().collect(),
             system: *system_reader.read().await,
         };
 
-        crate::sockets::write_json(&mut stream, &observe).await?;
+        crate::sockets::write_json(&mut stream, &observe).await.map_err(err_with_path)?;
     }
 }
 

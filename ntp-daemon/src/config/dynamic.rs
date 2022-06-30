@@ -10,7 +10,7 @@ use tracing_subscriber::EnvFilter;
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
-use super::ConfigureConfig;
+use super::{ConfigureConfig, ConfigError};
 
 fn parse_env_filter(input: &str) -> Result<String, tracing_subscriber::filter::ParseError> {
     // run the parser to error on any invalid input
@@ -52,7 +52,7 @@ pub async fn spawn<H: LogReloader + Send + 'static>(
     config: ConfigureConfig,
     system_config: Arc<RwLock<SystemConfig>>,
     log_reload_handle: H,
-) -> JoinHandle<std::io::Result<()>> {
+) -> JoinHandle<Result<(), ConfigError>> {
     tokio::spawn(async move {
         let result = dynamic_configuration(config, system_config, log_reload_handle).await;
         if let Err(ref e) = result {
@@ -66,30 +66,34 @@ async fn dynamic_configuration<H: LogReloader>(
     config: ConfigureConfig,
     system_config: Arc<RwLock<SystemConfig>>,
     log_reload_handle: H,
-) -> std::io::Result<()> {
+) -> Result<(), ConfigError> {
     let path = match config.path {
         Some(path) => path,
         None => return Ok(()),
     };
 
+    let err_with_path = |e| {
+        ConfigError::Io(path.to_owned(), e)
+    };
+
     // must unlink path before the bind below (otherwise we get "address already in use")
     if path.exists() {
-        std::fs::remove_file(&path)?;
+        std::fs::remove_file(&path).map_err(err_with_path)?;
     }
-    let peers_listener = UnixListener::bind(&path)?;
+    let peers_listener = UnixListener::bind(&path).map_err(err_with_path)?;
 
     // this binary needs to run as root to be able to adjust the system clock.
     // by default, the socket inherits root permissions, but the client should not need
     // elevated permissions to read from the socket. So we explicitly set the permissions
     let permissions: std::fs::Permissions = PermissionsExt::from_mode(config.mode);
-    std::fs::set_permissions(&path, permissions)?;
+    std::fs::set_permissions(&path, permissions).map_err(err_with_path)?;
 
     let mut msg = Vec::with_capacity(16 * 1024);
 
     loop {
-        let (mut stream, _addr) = peers_listener.accept().await?;
+        let (mut stream, _addr) = peers_listener.accept().await.map_err(err_with_path)?;
 
-        let operation: ConfigUpdate = crate::sockets::read_json(&mut stream, &mut msg).await?;
+        let operation: ConfigUpdate = crate::sockets::read_json(&mut stream, &mut msg).await.map_err(err_with_path)?;
 
         tracing::info!(?operation, "dynamic config update");
 

@@ -152,14 +152,16 @@ fn default_sample_rate() -> f32 {
 #[derive(Error, Debug)]
 pub enum ConfigError {
     #[error("io error while reading config: {0}")]
-    Io(#[from] io::Error),
+    Io(PathBuf, io::Error),
     #[error("config toml parsing error: {0}")]
     Toml(#[from] toml::de::Error),
 }
 
 impl Config {
     async fn from_file(file: impl AsRef<Path>) -> Result<Config, ConfigError> {
-        let contents = read_to_string(file).await?;
+        let f = file.as_ref();
+        let contents = read_to_string(f).await.map_err(|e|
+            ConfigError::Io(f.to_owned(), e))?;
         Ok(toml::de::from_str(&contents)?)
     }
 
@@ -171,13 +173,13 @@ impl Config {
 
         // try ntp.toml in working directory or skip if file doesn't exist
         match Config::from_file("./ntp.toml").await {
-            Err(ConfigError::Io(e)) if e.kind() == ErrorKind::NotFound => {}
+            Err(ConfigError::Io(_, e)) if e.kind() == ErrorKind::NotFound => {}
             other => return other,
         }
 
         // for the global file we also ignore it when there are permission errors
         match Config::from_file("/etc/ntp.toml").await {
-            Err(ConfigError::Io(e))
+            Err(ConfigError::Io(_, e))
                 if e.kind() == ErrorKind::NotFound || e.kind() == ErrorKind::PermissionDenied => {}
             other => return other,
         }
